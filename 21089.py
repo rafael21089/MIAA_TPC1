@@ -26,9 +26,9 @@ cal_gt = []
 for y in cal_gt_file:
     cal_gt.append(int(y.rstrip('\n')))
 
-#Modelos Utilizados: vgg19 , densenet , resnet , mobilenet e efficientnet
+#Modelos Utilizados: vgg , densenet , resnet , mobilenet e efficientnet
 models = {
-    'vgg19': tf.keras.applications.vgg19.VGG19(weights='imagenet'),
+    'vgg': tf.keras.applications.vgg19.VGG19(weights='imagenet'),
     'densenet': tf.keras.applications.densenet.DenseNet121(weights='imagenet'),
     'resnet': tf.keras.applications.resnet.ResNet152(weights='imagenet'),
     'mobilenet': tf.keras.applications.mobilenet_v2.MobileNetV2(weights='imagenet'),
@@ -37,7 +37,7 @@ models = {
 
 # Input para Preprocess
 preprocess_input = {
-    'vgg19': tf.keras.applications.vgg19.preprocess_input,
+    'vgg': tf.keras.applications.vgg19.preprocess_input,
     'densenet': tf.keras.applications.densenet.preprocess_input,
     'resnet': tf.keras.applications.resnet.preprocess_input,
     'mobilenet': tf.keras.applications.mobilenet_v2.preprocess_input,
@@ -49,7 +49,7 @@ IMAGE_RES = 224
 
 # Tamanho das imagens
 img_size = {
-    'vgg19': (IMAGE_RES, IMAGE_RES),
+    'vgg': (IMAGE_RES, IMAGE_RES),
     'resnet': (IMAGE_RES, IMAGE_RES),
     'efficientnet': (IMAGE_RES, IMAGE_RES),
     'densenet': (IMAGE_RES, IMAGE_RES),
@@ -59,7 +59,7 @@ img_size = {
 cal_pred = []
 results = {}
 
-for model_name, model in models.items():
+for name, model in models.items():
 
     # Medida do tempo inicial para calculo de FPS
     start_time = time.time()
@@ -67,7 +67,7 @@ for model_name, model in models.items():
     cal_pred = []
 
     print("\n--------------------------------------\n")
-    print(f"Modelo-> {model_name}...\n")
+    print(f"Modelo-> {name}...\n")
 
     for i, file in enumerate(cal_files):
         image_path = os.path.join(calibration_images_folder, file)
@@ -75,7 +75,7 @@ for model_name, model in models.items():
         image = tf.keras.preprocessing.image.load_img(image_path, target_size=(IMAGE_RES, IMAGE_RES))
         x = tf.keras.preprocessing.image.img_to_array(image)
         x = np.expand_dims(x, axis=0)
-        x = preprocess_input[model_name](x)
+        x = preprocess_input[name](x)
 
         result = model.predict(x, verbose=0)
         predicted_class = np.argmax(result[0], axis=-1)
@@ -95,7 +95,7 @@ for model_name, model in models.items():
     confusion_matrix_normalized = confusion_matrix(cal_gt, cal_pred, normalize='true')
 
     # Guardar resultados por modelo
-    results[model_name] = {
+    results[name] = {
         'precision': precision,
         'recall': recall,
         'fscore': fscore,
@@ -106,11 +106,11 @@ for model_name, model in models.items():
     }
 
     # Print Resultados
-    print(f"{model_name} -> Precision: {precision:.4f} || Recall: {recall:.4f} || F-Score: {fscore:.4f} || Accuracy: {accuracy:.4f} || FPS: {fps:.2f} \n")
+    print(f"{name} -> Precision: {precision:.4f} || Recall: {recall:.4f} || F-Score: {fscore:.4f} || Accuracy: {accuracy:.4f} || FPS: {fps:.2f} \n")
 
     # Print confusion matrices
-    print(f"Confusion Matrix (Absoluta) para {model_name}:\n{confusion_matrix_absolute}\n")
-    print(f"Confusion Matrix (Normalizada) para {model_name}:\n{confusion_matrix_normalized}")
+    print(f"Confusion Matrix (Absoluta) para {name}:\n{confusion_matrix_absolute}\n")
+    print(f"Confusion Matrix (Normalizada) para {name}:\n{confusion_matrix_normalized}")
 
 # Grafico que demonstra os resultados
 model_names = list(results.keys())
