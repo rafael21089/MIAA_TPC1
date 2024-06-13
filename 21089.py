@@ -18,24 +18,16 @@ base_dir = os.path.join(os.path.dirname(zip_file), 'flower_photos')
 # Define parameters
 classes = ['roses', 'daisy', 'dandelion', 'sunflowers', 'tulips']
 num_classes = len(classes)
-dataset_split_percentage = [0.6, 0.2, 0.2] # percentages for training, validation, and test sets
-epochs = 50
-batch_size = 32
+epochs = 1
+batch_size = 64
 IMG_SHAPE = 224
 learning_rate = 0.001
-checkpoint_dir = "checkpoints"
+checkpoint_dir = "model_checkpoint.keras"
 
 # Create model name and log directory
 timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
 modelName = "DenseNet121_finetune_" + "E" + str(epochs) + "_LR" + str(learning_rate) + "_" + timestamp
 log_dir = os.path.join("logs", "fit", modelName)
-
-# Function to stratify split the dataset
-def stratified_split(images, labels, train_size, val_size):
-    x_train, x_temp, y_train, y_temp = train_test_split(images, labels, stratify=labels, train_size=train_size)
-    val_ratio = val_size / (1 - train_size)
-    x_val, x_test, y_val, y_test = train_test_split(x_temp, y_temp, stratify=y_temp, test_size=val_ratio)
-    return x_train, x_val, x_test, y_train, y_val, y_test
 
 # Collect image paths and labels
 image_paths = []
@@ -48,7 +40,8 @@ for cl in classes:
     image_labels.extend([cl] * len(images))
 
 # Stratified split
-x_train, x_val, x_test, y_train, y_val, y_test = stratified_split(image_paths, image_labels, dataset_split_percentage[0], dataset_split_percentage[1])
+X_temp, X_test, y_temp, y_test = train_test_split(image_paths, image_labels, test_size=0.4, stratify=image_labels, random_state=42)
+X_train, X_val, y_train, y_val = train_test_split(X_temp, y_temp, test_size=0.5, stratify=y_temp, random_state=42)
 
 # Data augmentation and generators
 train_datagen = ImageDataGenerator(
@@ -111,14 +104,14 @@ history = model.fit(
 def preprocess_image(img_path):
     img = tf.keras.preprocessing.image.load_img(img_path, target_size=(IMG_SHAPE, IMG_SHAPE))
     img = tf.keras.preprocessing.image.img_to_array(img)
-    img = img / 255.0
+    img = img / 255.0 #Normalicao da imagem
     return img
 
-x_test_images = np.array([preprocess_image(img) for img in x_test])
+x_test_images = np.array([preprocess_image(img) for img in X_test])
 y_test_labels = np.array([classes.index(label) for label in y_test])
 
 # Make predictions
-y_pred = np.argmax(model.predict(x_test_images), axis=1)
+y_pred = np.argmax(model.predict(x_test_images,verbose=0), axis=-1)
 
 # Compute confusion matrix
 cm = confusion_matrix(y_test_labels, y_pred)
@@ -133,36 +126,5 @@ print(classification_report(y_test_labels, y_pred, target_names=classes))
 accuracy = accuracy_score(y_test_labels, y_pred)
 print(f"Accuracy: {accuracy}")
 
-# Plot confusion matrix
-def plot_confusion_matrix(cm, classes,
-                          normalize=False,
-                          title='Confusion matrix',
-                          cmap=plt.cm.Blues):
-    """
-    This function prints and plots the confusion matrix.
-    Normalization can be applied by setting `normalize=True`.
-    """
-    if normalize:
-        cm = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
 
-    plt.imshow(cm, interpolation='nearest', cmap=cmap)
-    plt.title(title)
-    plt.colorbar()
-    tick_marks = np.arange(len(classes))
-    plt.xticks(tick_marks, classes, rotation=45)
-    plt.yticks(tick_marks, classes)
 
-    fmt = '.2f' if normalize else 'd'
-    thresh = cm.max() / 2.
-    for i, j in itertools.product(range(cm.shape[0]), range(cm.shape[1])):
-        plt.text(j, i, format(cm[i, j], fmt),
-                 horizontalalignment="center",
-                 color="white" if cm[i, j] > thresh else "black")
-
-    plt.ylabel('True label')
-    plt.xlabel('Predicted label')
-    plt.tight_layout()
-
-plt.figure()
-plot_confusion_matrix(cm, classes=classes, title='Confusion Matrix')
-plt.show()
