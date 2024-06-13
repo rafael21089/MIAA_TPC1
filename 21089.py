@@ -1,148 +1,168 @@
 import os
-import time
-import tensorflow as tf
 import numpy as np
+import glob
+import shutil
 import matplotlib.pyplot as plt
-from sklearn.metrics import precision_score, recall_score, f1_score, accuracy_score, confusion_matrix
+import datetime
+import tensorflow as tf
+from sklearn.metrics import confusion_matrix, classification_report, accuracy_score
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from sklearn.model_selection import train_test_split
+import itertools
 
-# Carregar para calibracao
-calibration_list_of_files = "ILSVRC2012_CalibrationSet.txt"
-calibration_images_folder = "./images/ILSVRC2012_img_cal"
-calibration_groundtruth = "ILSVRC2012_calibration_ground_truth.txt"
+# Download and extract dataset
+_URL = "https://storage.googleapis.com/download.tensorflow.org/example_images/flower_photos.tgz"
+zip_file = tf.keras.utils.get_file(origin=_URL, fname="flower_photos.tgz", extract=True)
+base_dir = os.path.join(os.path.dirname(zip_file), 'flower_photos')
 
-# Carregar Labels
-labels_path = tf.keras.utils.get_file('ImageNetLabels.txt','https://storage.googleapis.com/download.tensorflow.org/data/ImageNetLabels.txt')
-imagenet_labels = open(labels_path).read().splitlines()
-imagenet_labels = imagenet_labels[1:]
+# Define parameters
+classes = ['roses', 'daisy', 'dandelion', 'sunflowers', 'tulips']
+num_classes = len(classes)
+dataset_split_percentage = [0.6, 0.2, 0.2] # percentages for training, validation, and test sets
+epochs = 50
+batch_size = 32
+IMG_SHAPE = 224
+learning_rate = 0.001
+checkpoint_dir = "checkpoints"
 
+# Create model name and log directory
+timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+modelName = "DenseNet121_finetune_" + "E" + str(epochs) + "_LR" + str(learning_rate) + "_" + timestamp
+log_dir = os.path.join("logs", "fit", modelName)
 
-cal_list_of_files = open(calibration_list_of_files, 'r')
-cal_files = list()
-for file in cal_list_of_files:
-    cal_files.append(file.rstrip('\n'))
+# Function to stratify split the dataset
+def stratified_split(images, labels, train_size, val_size):
+    x_train, x_temp, y_train, y_temp = train_test_split(images, labels, stratify=labels, train_size=train_size)
+    val_ratio = val_size / (1 - train_size)
+    x_val, x_test, y_val, y_test = train_test_split(x_temp, y_temp, stratify=y_temp, test_size=val_ratio)
+    return x_train, x_val, x_test, y_train, y_val, y_test
 
-cal_gt_file = open(calibration_groundtruth, 'r')
-cal_gt = []
-for y in cal_gt_file:
-    cal_gt.append(int(y.rstrip('\n')))
+# Collect image paths and labels
+image_paths = []
+image_labels = []
 
-#Modelos Utilizados: vgg , densenet , resnet , mobilenet e efficientnet
-models = {
-    'vgg': tf.keras.applications.vgg19.VGG19(weights='imagenet'),
-    'densenet': tf.keras.applications.densenet.DenseNet121(weights='imagenet'),
-    'resnet': tf.keras.applications.resnet.ResNet152(weights='imagenet'),
-    'mobilenet': tf.keras.applications.mobilenet_v2.MobileNetV2(weights='imagenet'),
-    'efficientnet': tf.keras.applications.efficientnet.EfficientNetB0(weights='imagenet')
-}
+for cl in classes:
+    img_path = os.path.join(base_dir, cl)
+    images = glob.glob(img_path + '/*.jpg')
+    image_paths.extend(images)
+    image_labels.extend([cl] * len(images))
 
-# Input para Preprocess
-preprocess_input = {
-    'vgg': tf.keras.applications.vgg19.preprocess_input,
-    'densenet': tf.keras.applications.densenet.preprocess_input,
-    'resnet': tf.keras.applications.resnet.preprocess_input,
-    'mobilenet': tf.keras.applications.mobilenet_v2.preprocess_input,
-    'efficientnet': tf.keras.applications.efficientnet.preprocess_input
-}
+# Stratified split
+x_train, x_val, x_test, y_train, y_val, y_test = stratified_split(image_paths, image_labels, dataset_split_percentage[0], dataset_split_percentage[1])
 
-#Tamanho 224x224
-IMAGE_RES = 224
+# Data augmentation and generators
+train_datagen = ImageDataGenerator(
+    rescale=1./255,
+    rotation_range=45,
+    width_shift_range=0.15,
+    height_shift_range=0.15,
+    horizontal_flip=True,
+    zoom_range=0.5,
+    validation_split=0.2)
 
-# Tamanho das imagens
-img_size = {
-    'vgg': (IMAGE_RES, IMAGE_RES),
-    'resnet': (IMAGE_RES, IMAGE_RES),
-    'efficientnet': (IMAGE_RES, IMAGE_RES),
-    'densenet': (IMAGE_RES, IMAGE_RES),
-    'mobilenet': (IMAGE_RES, IMAGE_RES)
-}
+train_generator = train_datagen.flow_from_directory(
+    base_dir,
+    target_size=(IMG_SHAPE, IMG_SHAPE),
+    batch_size=batch_size,
+    classes=classes,
+    subset='training',
+    class_mode='sparse')
 
-cal_pred = []
-results = {}
+validation_generator = train_datagen.flow_from_directory(
+    base_dir,
+    target_size=(IMG_SHAPE, IMG_SHAPE),
+    batch_size=batch_size,
+    classes=classes,
+    subset='validation',
+    class_mode='sparse')
 
-for name, model in models.items():
+# Load pre-trained DenseNet121 model
+base_model = tf.keras.applications.DenseNet121(input_shape=(IMG_SHAPE, IMG_SHAPE, 3), include_top=False, weights='imagenet')
+base_model.trainable = False
 
-    # Medida do tempo inicial para calculo de FPS
-    start_time = time.time()
-    # Reset de cal_pred para cada avaliacao do modelo
-    cal_pred = []
+# Add custom top layers
+x = base_model.output
+x = tf.keras.layers.GlobalAveragePooling2D()(x)
+x = tf.keras.layers.Dense(512, activation='relu')(x)
+x = tf.keras.layers.Dropout(0.5)(x)
+predictions = tf.keras.layers.Dense(num_classes, activation='softmax')(x)
 
-    print("\n--------------------------------------\n")
-    print(f"Modelo-> {name}...\n")
+model = tf.keras.models.Model(inputs=base_model.input, outputs=predictions)
 
-    for i, file in enumerate(cal_files):
-        image_path = os.path.join(calibration_images_folder, file)
+# Compile the model
+optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
+model.compile(optimizer=optimizer, loss='sparse_categorical_crossentropy', metrics=['accuracy'])
 
-        image = tf.keras.preprocessing.image.load_img(image_path, target_size=(IMAGE_RES, IMAGE_RES))
-        x = tf.keras.preprocessing.image.img_to_array(image)
-        x = np.expand_dims(x, axis=0)
-        x = preprocess_input[name](x)
+# Callbacks
+tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=log_dir)
+checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(filepath=checkpoint_dir, save_best_only=True)
+early_stopping_callback = tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=5)
 
-        result = model.predict(x, verbose=0)
-        predicted_class = np.argmax(result[0], axis=-1)
-        cal_pred.append(predicted_class)
+# Train the model
+history = model.fit(
+    train_generator,
+    steps_per_epoch=train_generator.samples // batch_size,
+    epochs=epochs,
+    validation_data=validation_generator,
+    validation_steps=validation_generator.samples // batch_size,
+    callbacks=[tensorboard_callback, checkpoint_callback, early_stopping_callback])
 
-    # Calcule o FPS (FPS é calculado com o número de imagens total dividido pelo tempo total gasto.)
-    total_time = time.time() - start_time
-    fps = len(cal_files) / total_time
+# Preprocess test images
+def preprocess_image(img_path):
+    img = tf.keras.preprocessing.image.load_img(img_path, target_size=(IMG_SHAPE, IMG_SHAPE))
+    img = tf.keras.preprocessing.image.img_to_array(img)
+    img = img / 255.0
+    return img
 
+x_test_images = np.array([preprocess_image(img) for img in x_test])
+y_test_labels = np.array([classes.index(label) for label in y_test])
 
-    #Calculos da presicion , recall , f1 score , accuracy score e confusion matrix (Absolute e Normalizada)
-    precision = precision_score(cal_gt, cal_pred, average='macro', zero_division=0)
-    recall = recall_score(cal_gt, cal_pred, average='macro', zero_division=0)
-    fscore = f1_score(cal_gt, cal_pred, average='macro', zero_division=0)
-    accuracy = accuracy_score(cal_gt, cal_pred)
-    confusion_matrix_absolute = confusion_matrix(cal_gt, cal_pred)
-    confusion_matrix_normalized = confusion_matrix(cal_gt, cal_pred, normalize='true')
+# Make predictions
+y_pred = np.argmax(model.predict(x_test_images), axis=1)
 
-    # Guardar resultados por modelo
-    results[name] = {
-        'precision': precision,
-        'recall': recall,
-        'fscore': fscore,
-        'accuracy': accuracy,
-        'confusion_matrix_absolute': confusion_matrix_absolute,
-        'confusion_matrix_normalized': confusion_matrix_normalized,
-        'fps': fps
-    }
+# Compute confusion matrix
+cm = confusion_matrix(y_test_labels, y_pred)
+print("Confusion Matrix")
+print(cm)
 
-    # Print Resultados
-    print(f"{name} -> Precision: {precision:.4f} || Recall: {recall:.4f} || F-Score: {fscore:.4f} || Accuracy: {accuracy:.4f} || FPS: {fps:.2f} \n")
+# Classification report
+print("Classification Report")
+print(classification_report(y_test_labels, y_pred, target_names=classes))
 
-    # Print confusion matrices
-    print(f"Confusion Matrix (Absoluta) para {name}:\n{confusion_matrix_absolute}\n")
-    print(f"Confusion Matrix (Normalizada) para {name}:\n{confusion_matrix_normalized}")
+# Accuracy
+accuracy = accuracy_score(y_test_labels, y_pred)
+print(f"Accuracy: {accuracy}")
 
-# Grafico que demonstra os resultados
-model_names = list(results.keys())
-precisions = [results[model]['precision'] for model in model_names]
-recalls = [results[model]['recall'] for model in model_names]
-fscores = [results[model]['fscore'] for model in model_names]
-accuracies = [results[model]['accuracy'] for model in model_names]
-fpss = [results[model]['fps'] for model in model_names]
+# Plot confusion matrix
+def plot_confusion_matrix(cm, classes,
+                          normalize=False,
+                          title='Confusion matrix',
+                          cmap=plt.cm.Blues):
+    """
+    This function prints and plots the confusion matrix.
+    Normalization can be applied by setting `normalize=True`.
+    """
+    if normalize:
+        cm = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
 
-fig, ax = plt.subplots(3, 2, figsize=(15, 15))
+    plt.imshow(cm, interpolation='nearest', cmap=cmap)
+    plt.title(title)
+    plt.colorbar()
+    tick_marks = np.arange(len(classes))
+    plt.xticks(tick_marks, classes, rotation=45)
+    plt.yticks(tick_marks, classes)
 
-ax[0, 0].bar(model_names, precisions, color='b')
-ax[0, 0].set_title('Precision')
-ax[0, 0].set_ylabel('Score')
+    fmt = '.2f' if normalize else 'd'
+    thresh = cm.max() / 2.
+    for i, j in itertools.product(range(cm.shape[0]), range(cm.shape[1])):
+        plt.text(j, i, format(cm[i, j], fmt),
+                 horizontalalignment="center",
+                 color="white" if cm[i, j] > thresh else "black")
 
-ax[0, 1].bar(model_names, recalls, color='g')
-ax[0, 1].set_title('Recall')
-ax[0, 1].set_ylabel('Score')
+    plt.ylabel('True label')
+    plt.xlabel('Predicted label')
+    plt.tight_layout()
 
-ax[1, 0].bar(model_names, fscores, color='r')
-ax[1, 0].set_title('F1-Score')
-ax[1, 0].set_ylabel('Score')
-
-ax[1, 1].bar(model_names, accuracies, color='c')
-ax[1, 1].set_title('Accuracy')
-ax[1, 1].set_ylabel('Score')
-
-ax[2, 0].bar(model_names, fpss, color='m')
-ax[2, 0].set_title('Inference Frame Rate (FPS)')
-ax[2, 0].set_ylabel('FPS')
-
-ax[2, 1].axis('off')
-
-plt.tight_layout()
+plt.figure()
+plot_confusion_matrix(cm, classes=classes, title='Confusion Matrix')
 plt.show()
